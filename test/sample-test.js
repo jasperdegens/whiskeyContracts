@@ -1,20 +1,6 @@
 const { expect } = require("chai");
 const { ethers } = require("hardhat");
 
-describe("Greeter", function() {
-  it("Should return the new greeting once it's changed", async function() {
-    const Greeter = await ethers.getContractFactory("Greeter");
-    const greeter = await Greeter.deploy("Hello, world!");
-    
-    await greeter.deployed();
-    expect(await greeter.greet()).to.equal("Hello, world!");
-
-    await greeter.setGreeting("Hola, mundo!");
-    expect(await greeter.greet()).to.equal("Hola, mundo!");
-  });
-});
-
-
 
 describe(("Whiskey Platform"), function() {
 
@@ -33,8 +19,40 @@ describe(("Whiskey Platform"), function() {
   });
 
 
-  it("Should authorize the owners address to create a listing", async () => {
+  it("Should authorize the owners address for future listing", async () => {
     expect(await whiskeyPlatform.isAuthorizedToMint(accounts[0].address)).to.equal(true);
   }); 
+  
+  it("Should be able to authorize account", async () => {
+    expect(await whiskeyPlatform.isAuthorizedToMint(accounts[1].address)).to.equal(false);
+    await whiskeyPlatform.connect(accounts[0]).authorizeDistillery(accounts[1].address);
+    expect(await whiskeyPlatform.isAuthorizedToMint(accounts[1].address)).to.equal(true);
+
+  });
+
+  it("Should allow authorized accounts to create listing", async () => {
+    const listingDetails = [
+      3500, // start price
+      5500, // end price
+      500, // fees
+      250, // total bottles
+      2500, // buyback %
+
+      0, // startTimestamp
+      0 // endTimestamp
+    ];
+
+    await expect(whiskeyPlatform.connect(accounts[1]).createWhiskeyListing(...listingDetails)).to.be.reverted;
+
+    await whiskeyPlatform.connect(accounts[0]).authorizeDistillery(accounts[1].address);
+
+    await expect(whiskeyPlatform
+      .connect(accounts[1])
+      .createWhiskeyListing(...listingDetails))
+      .to.emit(whiskeyPlatform, 'BarrelListing')
+      .withArgs(0, 250, accounts[1].address);
+
+
+  })
 
 });

@@ -15,6 +15,9 @@ contract WhiskeyPlatform is ERC1155, ERC1155Holder, Ownable {
     using Address for address;
     using Counters for Counters.Counter;
 
+
+    event BarrelListing(uint256 tokenId, uint16 totalBottles, address distillery);
+
     // BarrelData stores data for a single whiskey release
     struct BarrelData {
         // ALL PRICES ARE IN USD DOWN TO 2 DECIMAL PLACES
@@ -22,7 +25,11 @@ contract WhiskeyPlatform is ERC1155, ERC1155Holder, Ownable {
         uint32 startPrice;
         uint32 endPrice;
         uint32 feesPerBottle;
+
+
         uint16 totalBottles;
+
+        // Percent is to 2 decimal places (3350 == 33.5%)
         uint16 buybackPercent;
 
 
@@ -61,7 +68,7 @@ contract WhiskeyPlatform is ERC1155, ERC1155Holder, Ownable {
     }
 
     function isAuthorizedToMint(address distilleryAddress) public view returns (bool) {
-        return authorizedDistilleries[_msgSender()];
+        return authorizedDistilleries[distilleryAddress];
     }
 
 
@@ -99,6 +106,16 @@ contract WhiskeyPlatform is ERC1155, ERC1155Holder, Ownable {
         barrel.buybackPercent = buybackPercent;
         barrel.startTimestamp = startTimestamp;
         barrel.endTimestamp = endTimestamp;
+
+        // NOW CREATE TOKENS...
+        _mint(_msgSender(), tokenId, totalBottles, "0x0");
+
+        // set location of treasury and authorize platform to conduct sales
+        tokenTreasuries[tokenId] = _msgSender();
+        setApprovalForAll(address(this), true);
+
+
+        emit BarrelListing(tokenId, totalBottles, _msgSender());
 
         return tokenId;
     }
