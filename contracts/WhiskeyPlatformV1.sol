@@ -11,6 +11,7 @@ import "@openzeppelin/contracts/token/ERC1155/ERC1155Holder.sol";
 import "@openzeppelin/contracts/math/SafeMath.sol";
 import "@openzeppelin/contracts/utils/Address.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
+import "@openzeppelin/contracts/math/Math.sol";
 
 contract WhiskeyPlatformV1 is ERC1155Holder, Ownable {
     using SafeMath for uint256;
@@ -82,15 +83,30 @@ contract WhiskeyPlatformV1 is ERC1155Holder, Ownable {
     }
 
     // Returns price in USD to 2 decimal places, (i.e. 3550 = $35.50)
-    function bottlePrice(uint256 tokenId, uint256 targetDate) public view returns (uint32, uint32) {
+    function bottlePrice(uint256 tokenId, uint256 targetDate) public view returns (uint32, uint32, uint32, uint32) {
         BarrelData storage barrel = barrels[tokenId];
         
-        // TODO: need to calculate price based on date provided
-        
-        return (barrel.startPriceUsd, barrel.feesPerBottleUsd);
+        // calculate price based on linear appreciation
+        // clamp date to avoid overflow
+        uint256 startTimestamp = barrel.startTimestamp;
+        uint256 endTimestamp = barrel.endTimestamp;
+        uint256 clampedDate = Math.max(startTimestamp, Math.min(endTimestamp, targetDate));
+        uint256 totalAgingDuration = endTimestamp - startTimestamp;
+        uint256 elapsedDuration = clampedDate - startTimestamp;
+
+        uint32 startPrice = barrel.startPriceUsd;
+        uint32 endPrice = barrel.endPriceUsd;
+        uint32 priceRange = endPrice - startPrice;
+        uint32 additionalPrice = uint32(uint256(priceRange).mul(elapsedDuration).div(totalAgingDuration));
+
+        uint32 currPrice = barrel.startPriceUsd + additionalPrice;
+
+        return (currPrice, barrel.startPriceUsd, barrel.endPriceUsd, barrel.feesPerBottleUsd);
     }
 
-
+    function currentBottlePrice(uint256 tokenId) public view returns(uint32, uint32, uint32, uint32) {
+        return bottlePrice(tokenId, block.timestamp);
+    }
 
     /**** Distillery Functions *****/
     
@@ -117,8 +133,13 @@ contract WhiskeyPlatformV1 is ERC1155Holder, Ownable {
             address(this)),
             "You must approve platform to sell bottles.");
 
+        // ensure price does not devalue
+        require(startPriceUsd <= endPriceUsd, "Price cannot devalue over time");
+
         // Mint tokens to create new tokenId from barrelHouse
         uint256 tokenId = barrelHouse.mint(_msgSender(), totalBottles);
+
+        uint16 clampedBuyback = buybackPercent > 10000 ? 10000 : buybackPercent;
 
         // set struct properties
         BarrelData storage barrel = barrels[tokenId];
@@ -126,7 +147,8 @@ contract WhiskeyPlatformV1 is ERC1155Holder, Ownable {
         barrel.endPriceUsd = endPriceUsd;
         barrel.feesPerBottleUsd = feesPerBottleUsd;
         barrel.totalBottles = totalBottles;
-        barrel.buybackPercent = buybackPercent;
+        // ensure cannot buyback more than 100%
+        barrel.buybackPercent = clampedBuyback;
         barrel.startTimestamp = startTimestamp;
         barrel.endTimestamp = endTimestamp;
 
@@ -146,7 +168,7 @@ contract WhiskeyPlatformV1 is ERC1155Holder, Ownable {
         require(remainingBottles >= quantity, "Not enough bottles available");
 
         
-        (uint32 tokenPriceUsd, uint32 feePriceUsd) = bottlePrice(tokenId, block.timestamp);
+        (uint32 tokenPriceUsd, uint32 startPrice, uint32 endPrice, uint32 feePriceUsd) = bottlePrice(tokenId, block.timestamp);
         uint256 paymentRequiredUSD = uint256(tokenPriceUsd + feePriceUsd).mul(quantity);
 
         // Ensure eth sent covers USD cost of bottles.
@@ -157,15 +179,16 @@ contract WhiskeyPlatformV1 is ERC1155Holder, Ownable {
        
         // Use ChainLink Oracle for price feed for production
         //(uint80 _, int256 ethToUsdRate, uint256 _, uint256 _, uint80 _) = priceFeed.latestRoundData();
-        //uint8 decimals = priceFeed.decimals();
+        //uint8 rateDecimals = priceFeed.decimals();
 
         require(ethToUsdRate > 0, "Cannot buy when rate is 0 or less.");
 
+        uint256 usdToWei = uint256(10 ** (rateDecimals - INTERNAL_PRICE_DECIMALS)).div(uint256(ethToUsdRate));
 
         console.log("Total Price USD: %s", paymentRequiredUSD);
-        console.log("Total Price in ETH: %s", paymentRequiredUSD.mul( 10**(rateDecimals - INTERNAL_PRICE_DECIMALS)).div(uint256(ethToUsdRate)));
+        console.log("Total Price in ETH: %s", paymentRequiredUSD.mul(usdToWei));
 
-        uint256 weiRequired = paymentRequiredUSD.mul( uint256(1 ether).mul(10 ** (rateDecimals - INTERNAL_PRICE_DECIMALS)) ).div(uint256(ethToUsdRate));
+        uint256 weiRequired = paymentRequiredUSD.mul(usdToWei);
 
         console.log("Payment supplied: %s", msg.value);
         console.log("Wei cost is %s", weiRequired);
@@ -194,12 +217,20 @@ contract WhiskeyPlatformV1 is ERC1155Holder, Ownable {
     function approveDistillery(address distilleryAddress) public onlyOwner {
         authorizedDistilleries[distilleryAddress] = true;
     }
-    
+
 
     /****** Internal Functions ****/
 
     // Ensure transfered amount covers cost of 
 
+
+    function DepositFees(uint256 feeAmount) internal {
+        // For now, deposit eth into Aave. However, if fee value is small, gas fees
+        // will be very expensive, so maybe need to rethink...
+        
+    }
+
+    
 
 }
 

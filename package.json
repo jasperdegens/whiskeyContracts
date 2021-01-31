@@ -11,5 +11,10 @@
   },
   "dependencies": {
     "@openzeppelin/contracts": "^3.3.0"
+  },
+  "scripts": {
+    "hardhat-local" : "npx hardhat node & npx hardhat run ./scripts/whiskeyPlatformLocal-scripts.js",
+    "transferAbi" : "node ./scripts/copyAbi.js"
   }
+
 }
