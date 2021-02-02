@@ -5,6 +5,7 @@ import "hardhat/console.sol";
 
 import "./BarrelHouse.sol";
 import "./AggregatorV3Interface.sol";
+import "./IWETHGateway.sol";
 
 import "@openzeppelin/contracts/token/ERC1155/IERC1155.sol";
 import "@openzeppelin/contracts/token/ERC1155/ERC1155Holder.sol";
@@ -12,8 +13,9 @@ import "@openzeppelin/contracts/math/SafeMath.sol";
 import "@openzeppelin/contracts/utils/Address.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/math/Math.sol";
+import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
-contract WhiskeyPlatformV1 is ERC1155Holder, Ownable {
+contract WhiskeyPlatformV1 is ERC1155Holder, Ownable, ReentrancyGuard {
     using SafeMath for uint256;
     using Address for address;
 
@@ -26,7 +28,7 @@ contract WhiskeyPlatformV1 is ERC1155Holder, Ownable {
         uint32 feesPerBottleUsd;
 
 
-        uint16 totalBottles;
+        uint16 totalBottleSupply;
 
         // Percent is to 2 decimal places (3350 == 33.5%)
         uint16 buybackPercent;
@@ -50,12 +52,17 @@ contract WhiskeyPlatformV1 is ERC1155Holder, Ownable {
     // Pricefeed aggregator from ChainLink
     AggregatorV3Interface internal priceFeed;
 
+    // Aave WETHGateway for eth deposits
+    IWETHGateway internal aaveWethGateway;
+
+    uint256 totalFeesDeposited = 0;
+
     uint8 constant INTERNAL_PRICE_DECIMALS = 2;
 
-
-    constructor (address barrelHouseAddress) public {
+    constructor (address barrelHouseAddress, address wethGateway) public {
         
         barrelHouse = BarrelHouse(barrelHouseAddress); 
+        aaveWethGateway = IWETHGateway(wethGateway);
 
         // authorize msgSender to be able to create barrel listing
         approveDistillery(_msgSender());
@@ -75,7 +82,7 @@ contract WhiskeyPlatformV1 is ERC1155Holder, Ownable {
 
     // Return the total number of bottles issued for a barrel
     function totalBottles(uint256 tokenId) public view returns (uint256) {
-        return barrels[tokenId].totalBottles;
+        return barrels[tokenId].totalBottleSupply;
     }
 
     function isApprovedToMint(address distilleryAddress) public view returns (bool) {
@@ -83,7 +90,7 @@ contract WhiskeyPlatformV1 is ERC1155Holder, Ownable {
     }
 
     // Returns price in USD to 2 decimal places, (i.e. 3550 = $35.50)
-    function bottlePrice(uint256 tokenId, uint256 targetDate) public view returns (uint32, uint32, uint32, uint32) {
+    function bottlePriceData(uint256 tokenId, uint256 targetDate) public view returns (uint32, uint32, uint32, uint32) {
         BarrelData storage barrel = barrels[tokenId];
         
         // calculate price based on linear appreciation
@@ -105,7 +112,13 @@ contract WhiskeyPlatformV1 is ERC1155Holder, Ownable {
     }
 
     function currentBottlePrice(uint256 tokenId) public view returns(uint32, uint32, uint32, uint32) {
-        return bottlePrice(tokenId, block.timestamp);
+        return bottlePriceData(tokenId, block.timestamp);
+    }
+
+    function barrelMaturationData(uint256 tokenId) public view returns (uint256, uint256) {
+        BarrelData storage barrel = barrels[tokenId];
+
+        return (barrel.startTimestamp, barrel.endTimestamp);
     }
 
     /**** Distillery Functions *****/
@@ -115,7 +128,7 @@ contract WhiskeyPlatformV1 is ERC1155Holder, Ownable {
         uint32 startPriceUsd,
         uint32 endPriceUsd,
         uint32 feesPerBottleUsd,
-        uint16 totalBottles,
+        uint16 totalBottleSupply,
         uint16 buybackPercent,
 
         uint256 startTimestamp,
@@ -137,7 +150,7 @@ contract WhiskeyPlatformV1 is ERC1155Holder, Ownable {
         require(startPriceUsd <= endPriceUsd, "Price cannot devalue over time");
 
         // Mint tokens to create new tokenId from barrelHouse
-        uint256 tokenId = barrelHouse.mint(_msgSender(), totalBottles);
+        uint256 tokenId = barrelHouse.mint(_msgSender(), totalBottleSupply);
 
         uint16 clampedBuyback = buybackPercent > 10000 ? 10000 : buybackPercent;
 
@@ -146,7 +159,7 @@ contract WhiskeyPlatformV1 is ERC1155Holder, Ownable {
         barrel.startPriceUsd = startPriceUsd;
         barrel.endPriceUsd = endPriceUsd;
         barrel.feesPerBottleUsd = feesPerBottleUsd;
-        barrel.totalBottles = totalBottles;
+        barrel.totalBottleSupply = totalBottleSupply;
         // ensure cannot buyback more than 100%
         barrel.buybackPercent = clampedBuyback;
         barrel.startTimestamp = startTimestamp;
@@ -162,28 +175,17 @@ contract WhiskeyPlatformV1 is ERC1155Holder, Ownable {
 
 
     /**** User Functions *****/
-    function purchaseBottles(uint256 tokenId, uint16 quantity) public payable {
+    function purchaseBottles(uint256 tokenId, uint16 quantity) public payable nonReentrant {
         // Ensure enough bottles to purchase
         uint256 remainingBottles = availableBottles(tokenId);
         require(remainingBottles >= quantity, "Not enough bottles available");
 
         
-        (uint32 tokenPriceUsd, uint32 startPrice, uint32 endPrice, uint32 feePriceUsd) = bottlePrice(tokenId, block.timestamp);
+        (uint32 tokenPriceUsd, uint32 startPrice, uint32 endPrice, uint32 feePriceUsd) = bottlePriceData(tokenId, block.timestamp);
         uint256 paymentRequiredUSD = uint256(tokenPriceUsd + feePriceUsd).mul(quantity);
 
         // Ensure eth sent covers USD cost of bottles.
-
-        // Local method
-        int ethToUsdRate = 124477730884; // ROUND 36893488147419107460 data from KOVAN
-        uint8 rateDecimals = 8;
-       
-        // Use ChainLink Oracle for price feed for production
-        //(uint80 _, int256 ethToUsdRate, uint256 _, uint256 _, uint80 _) = priceFeed.latestRoundData();
-        //uint8 rateDecimals = priceFeed.decimals();
-
-        require(ethToUsdRate > 0, "Cannot buy when rate is 0 or less.");
-
-        uint256 usdToWei = uint256(10 ** (rateDecimals - INTERNAL_PRICE_DECIMALS)).div(uint256(ethToUsdRate));
+        uint256 usdToWei = usdToWeiExchangeRate();
 
         console.log("Total Price USD: %s", paymentRequiredUSD);
         console.log("Total Price in ETH: %s", paymentRequiredUSD.mul(usdToWei));
@@ -195,6 +197,12 @@ contract WhiskeyPlatformV1 is ERC1155Holder, Ownable {
 
         require(msg.value >= weiRequired, "Payment does not cover the price of bottles.");
 
+
+        // calculate fees total in wei
+        uint256 feesInWei = uint256(feePriceUsd).mul(quantity).mul(usdToWei);
+        DepositFees(feesInWei);
+
+
         // Transfer tokens to buyer from treasury
         barrelHouse.safeTransferFrom(
             tokenTreasuries[tokenId],
@@ -204,8 +212,9 @@ contract WhiskeyPlatformV1 is ERC1155Holder, Ownable {
             "0x"
         );
 
-        // TODO: Transfer payment to treasury account
-        
+        // Transfer payment to treasury account
+        (bool success, ) = tokenTreasuries[tokenId].call{value: msg.value.sub(feesInWei)}("");
+        require(success, "Transfer did not succceed");
 
 
     }
@@ -222,12 +231,37 @@ contract WhiskeyPlatformV1 is ERC1155Holder, Ownable {
     /****** Internal Functions ****/
 
     // Ensure transfered amount covers cost of 
+    function usdToWeiExchangeRate() internal view returns (uint256) {
+      // Local method
+        int ethToUsdRate = 124477730884; // ROUND 36893488147419107460 data from KOVAN
+        uint8 rateDecimals = 8;
+       
+        // Use ChainLink Oracle for price feed for production
+        //(uint80 _, int256 ethToUsdRate, uint256 _, uint256 _, uint80 _) = priceFeed.latestRoundData();
+        //uint8 rateDecimals = priceFeed.decimals();
 
+        require(ethToUsdRate > 0, "Cannot buy when rate is 0 or less.");
 
-    function DepositFees(uint256 feeAmount) internal {
+        uint256 usdToWei = uint256(10 ** (rateDecimals - INTERNAL_PRICE_DECIMALS)).mul(1 ether).div(uint256(ethToUsdRate));
+
+        return usdToWei;
+    }
+
+    function DepositFees(uint256 feeAmountInWei) internal {
         // For now, deposit eth into Aave. However, if fee value is small, gas fees
         // will be very expensive, so maybe need to rethink...
+
+        totalFeesDeposited += feeAmountInWei;
+
+        aaveWethGateway.depositETH{value: feeAmountInWei}(address(this), 0);
+
         
+    }
+
+
+    // Fallback function
+    receive() external payable {
+    
     }
 
     

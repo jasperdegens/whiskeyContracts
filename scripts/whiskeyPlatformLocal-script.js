@@ -28,8 +28,8 @@ async function createTestListings() {
         250, // total bottles
         2500, // buyback %
 
-        0, // startTimestamp
-        0 // endTimestamp
+        Math.floor((new Date(2020, 1, 1).getTime() / 1000)), // startTimestamp
+        Math.floor((new Date(2025, 1, 1).getTime() / 1000)) // endTimestamp
     ];
 
     for(let i = 0; i < 20; i++) {
