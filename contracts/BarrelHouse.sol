@@ -62,9 +62,19 @@ contract BarrelHouse is ERC1155, AccessControl {
         _mint(treasury, currTokenId, bottles, "0x0");
         
         return currTokenId;
-
     }
 
+    /**
+     * @dev Burns tokens after redeemed, or can burn if distillery wants to burn them.
+     */
+    function burn(address account, uint256 id, uint256 value) public {
+        require(
+            account == _msgSender() || isApprovedForAll(account, _msgSender()),
+            "ERC1155: caller is not owner nor approved"
+        );
+
+        _burn(account, id, value);
+    }
     
     function setUri(string memory newUri) public {
         require(hasRole(DEFAULT_ADMIN_ROLE, _msgSender()), "Must be admin to change uri.");

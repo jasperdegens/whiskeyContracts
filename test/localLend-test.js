@@ -23,7 +23,8 @@ describe("Fee and Aave lending tests", () => {
         const WethGateway = await ethers.getContractFactory("TestWETHGateway");
         barrelHouse = await BarrelHouse.deploy();
         await barrelHouse.deployed();
-        wethGateway = await WethGateway.deploy();
+        // deploy and give ample eth to simulate interest
+        wethGateway = await WethGateway.deploy({value: ethers.constants.WeiPerEther.mul(5)});
         await wethGateway.deployed();
         whiskeyPlatform = await WhiskeyPlatform.deploy(barrelHouse.address, wethGateway.address);
 
@@ -46,16 +47,24 @@ describe("Fee and Aave lending tests", () => {
         endTimestamp // endTimestamp
     ];
 
-    async function createListing() {
+    async function createListing(fees) {
+        testListing[2] = fees;
         await whiskeyPlatform.connect(accounts[0]).createWhiskeyListing(...testListing);
     }
 
+    function usdToWei(usd) {
+        return ethers.constants.WeiPerEther.mul(10**6).mul(usd).div(usdPerEth);
+    }
+
+    function weiToUsd(wei) {
+        return ethers.BigNumber.from(wei).mul(usdPerEth).div(ethers.constants.WeiPerEther).div(10**6);
+    }
 
     it("Should check balance of wethGateway", async() => {
 
-        await createListing();
+        const startGatewayBalance = await provider.getBalance(wethGateway.address);
+        await createListing(500);
         expect(await barrelHouse.balanceOf(accounts[0].address, 0)).to.equal(250);
-        expect(await provider.getBalance(wethGateway.address)).to.equal(0);
 
         const distilleryIniitalBalance = await provider.getBalance(accounts[0].address);
         
@@ -75,10 +84,6 @@ describe("Fee and Aave lending tests", () => {
         // ensure new owner of bottles
         expect(await barrelHouse.balanceOf(accounts[1].address, 0)).to.equal(numBottles);
 
-        // check fees remain on gateway contract
-        const gatewayBalance = await provider.getBalance(wethGateway.address);
-        expect(Math.abs(gatewayBalance.sub(feePriceInWei).toNumber())).to.be.lessThan(10**4);
-        
         // check funds have transferred to account[0]
         const distilelryAfterBalance = await provider.getBalance(accounts[0].address);
         console.log(distilelryAfterBalance.toString());
@@ -87,7 +92,42 @@ describe("Fee and Aave lending tests", () => {
         // test if within $0.01
         expect(Math.abs(usdValue.toNumber() - testListing[0])).to.be.lessThan(2);
 
-    })
+        expect(await provider.getBalance(whiskeyPlatform.address)).to.equal(0);
+
+        expect(Math.abs((await whiskeyPlatform.totalFeesDepositedInWei()).sub(feePriceInWei).toNumber())).to.be.lessThan(10**4);
+
+    });
+
+    it("Should complete multiple purchases and fees should remain accurate", async() => {
+
+        let totalFeesUsd = 0;
+        for(let i = 0; i < 8; i++) {
+            const fees = 250 * (i + 1);
+            await createListing(fees);
+
+            // buy from account (i + 1)
+            const account = accounts[i+ 1];
+            const numBottles = i + 1;
+            const trxValue = usdToWei(numBottles * (fees + testListing[0]));
+            await whiskeyPlatform.connect(account).purchaseBottles(i, numBottles, {value: trxValue});
+
+            expect(await barrelHouse.balanceOf(account.address, i)).to.equal(numBottles);
+
+            const platformFeeTotal = await whiskeyPlatform.totalFeesDepositedInWei();
+            const platformFeeUsd = weiToUsd(platformFeeTotal).toNumber();
+            totalFeesUsd += numBottles * fees;
+            // test if within $0.01
+            console.log(platformFeeUsd);
+            console.log(totalFeesUsd);
+            expect(Math.abs(totalFeesUsd - platformFeeUsd)).to.be.lessThan(2);
+        }
+
+        //const depositedWei = await wethGateway.balanceOf(whiskeyPlatform.address);
+        //expect(depositedWei).to.equal(await whiskeyPlatform.totalFeesDepositedInWei());
+
+        await barrelHouse.connect(accounts[2]).setApprovalForAll(whiskeyPlatform.address, true);
+        await whiskeyPlatform.connect(accounts[2]).redeem(1, 2);
+    });
 
 
 

@@ -3,16 +3,24 @@ pragma solidity ^0.7.0;
 
 import './IWETHGateway.sol';
 import 'hardhat/console.sol';
+import '@openzeppelin/contracts/token/ERC20/ERC20.sol';
 
-contract TestWETHGateway is IWETHGateway { 
+contract TestWETHGateway is IWETHGateway, ERC20 { 
+
+  constructor() ERC20("Test Aave", "aWETH") payable { }
 
   function depositETH(address onBehalfOf, uint16 referralCode) override external payable {
       console.log('Received: %s', msg.value);
+      // mint equivalent amount to msg sender
+      // simulate 10% interest
+      uint256 interestSimulation = (msg.value * 11) / 10;
+      _mint(msg.sender, interestSimulation);
   }
 
   function withdrawETH(uint256 amount, address onBehalfOf) override external {
-      console.log('Sending back: %s', address(this).balance);
-      onBehalfOf.call{value: (address(this).balance)}("");
+      require(balanceOf(onBehalfOf) >= amount, "Not enough deposited funds");
+      _burn(msg.sender, amount);
+      onBehalfOf.call{value: amount}("");
   }
 
   function repayETH(
@@ -30,6 +38,11 @@ contract TestWETHGateway is IWETHGateway {
   ) override external {
 
   }
+
+  function getAWETHAddress() override external returns (address) {
+      return address(this);
+  }
+
 
 
 }

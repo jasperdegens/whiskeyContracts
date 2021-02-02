@@ -40,7 +40,7 @@ contract WhiskeyPlatformV1 is ERC1155Holder, Ownable, ReentrancyGuard {
 
     BarrelHouse public barrelHouse;
 
-    // Mapping from tokenId to it's barrelData
+    // Map from tokenId to it's barrelData
     mapping(uint256 => BarrelData) barrels;
 
     // Map token id to the distillery / treasury account
@@ -49,13 +49,17 @@ contract WhiskeyPlatformV1 is ERC1155Holder, Ownable, ReentrancyGuard {
     // List of distilleries that can list barrels
     mapping(address => bool) authorizedDistilleries;
 
+    // Tracks total fee deposits in wei and USD to calculate interest earned for each bottle
+    uint256 public totalFeesDepositedInWei = 0;
+    uint256 public totalFeesDepositedInUsd = 0;
+    
+    
     // Pricefeed aggregator from ChainLink
     AggregatorV3Interface internal priceFeed;
 
     // Aave WETHGateway for eth deposits
     IWETHGateway internal aaveWethGateway;
 
-    uint256 totalFeesDeposited = 0;
 
     uint8 constant INTERNAL_PRICE_DECIMALS = 2;
 
@@ -69,7 +73,6 @@ contract WhiskeyPlatformV1 is ERC1155Holder, Ownable, ReentrancyGuard {
 
         // Chainlink ETH/USD Kovan Address = 0x9326BFA02ADD2366b30bacB125260Af641031331
         priceFeed = AggregatorV3Interface(0x9326BFA02ADD2366b30bacB125260Af641031331);
-
 
     }
 
@@ -199,8 +202,9 @@ contract WhiskeyPlatformV1 is ERC1155Holder, Ownable, ReentrancyGuard {
 
 
         // calculate fees total in wei
-        uint256 feesInWei = uint256(feePriceUsd).mul(quantity).mul(usdToWei);
-        DepositFees(feesInWei);
+        uint256 feesInUsd = uint256(feePriceUsd).mul(quantity);
+        uint256 feesInWei = feesInUsd.mul(usdToWei);
+        DepositFees(feesInWei, feesInUsd);
 
 
         // Transfer tokens to buyer from treasury
@@ -212,12 +216,31 @@ contract WhiskeyPlatformV1 is ERC1155Holder, Ownable, ReentrancyGuard {
             "0x"
         );
 
-        // Transfer payment to treasury account
+        // Safe transfer payment to treasury account
         (bool success, ) = tokenTreasuries[tokenId].call{value: msg.value.sub(feesInWei)}("");
         require(success, "Transfer did not succceed");
+    }
 
+    /**
+     * @dev Redeem function allows user to trade in tokens for product. Product will either
+     * be picked up or shipped.
+     * Redeemed tokens will then be burnt, and the interest off of the fees will be transfered
+     * to the redeeming user.
+     * 
+     * REQUIREMENTS: 
+     *   - User must approve platform to transfer their whiskey tokens.
+     */
+    function redeem(uint256 tokenId, uint16 quantity) public {
+        barrelHouse.burn(_msgSender(), tokenId, quantity);
+
+        BarrelData storage barrel = barrels[tokenId];
+
+        uint256 feesPaidUsd = quantity * barrel.feesPerBottleUsd;
+
+        WithdrawFees(_msgSender(), tokenTreasuries[tokenId], feesPaidUsd);
 
     }
+
 
 
     /**** Platform Functions *****/
@@ -247,17 +270,66 @@ contract WhiskeyPlatformV1 is ERC1155Holder, Ownable, ReentrancyGuard {
         return usdToWei;
     }
 
-    function DepositFees(uint256 feeAmountInWei) internal {
+    function DepositFees(uint256 feeAmountInWei, uint256 feeAmountInUsd) internal {
         // For now, deposit eth into Aave. However, if fee value is small, gas fees
         // will be very expensive, so maybe need to rethink...
 
-        totalFeesDeposited += feeAmountInWei;
+        totalFeesDepositedInWei += feeAmountInWei;
+        totalFeesDepositedInUsd += feeAmountInUsd;
 
         aaveWethGateway.depositETH{value: feeAmountInWei}(address(this), 0);
-
         
     }
 
+    /**
+     * @dev Calculate the share of fees that the distillery and redeemer are entitled to.
+     * Redeemer is entitled to all interest off of fee pool, and distillery receives the 
+     * remaining amount. All price fluctuations in ETH are split between distillery and redeemer.
+     */
+    function WithdrawFees(
+        address redeemer,
+        address distillery,
+        uint256 feesPaidInUsd
+    )
+    internal nonReentrant {
+
+        (bool success, bytes memory result) = (aaveWethGateway.getAWETHAddress())
+            .call(abi.encodeWithSignature("balanceOf(address)", address(this)));      
+        require(success, "Error calling aWeth contract");
+
+        uint256 feesWithInterest = toUint256(result, 0);
+        
+        // calculate wei representation of share of fee pool
+        uint256 feeRatioInWei = feesPaidInUsd.mul(totalFeesDepositedInWei).div(totalFeesDepositedInUsd);
+        // calculate interest earned ratio
+        uint256 interestEarnedRatio = feesPaidInUsd.mul(feesWithInterest).div(totalFeesDepositedInUsd);
+        aaveWethGateway.withdrawETH(interestEarnedRatio, address(this));        
+
+
+        uint256 eligableInterest = interestEarnedRatio - feeRatioInWei;
+
+        console.log("Deposited fees: %s", feeRatioInWei);
+        console.log("Interest earned: %s", interestEarnedRatio);
+        console.log("Eligable interest: %s", eligableInterest);
+
+
+        (bool distilleryFeePaidSuccess,) = distillery.call{value: feeRatioInWei}("");
+        (bool redeemerInterestPaid,) = redeemer.call{value: eligableInterest}("");
+        require(distilleryFeePaidSuccess && redeemerInterestPaid, "Error paying out fees.");
+
+    }
+
+    function toUint256(bytes memory _bytes, uint256 _start) internal pure returns (uint256) {
+        require(_start + 32 >= _start, "toUint256_overflow");
+        require(_bytes.length >= _start + 32, "toUint256_outOfBounds");
+        uint256 tempUint;
+
+        assembly {
+            tempUint := mload(add(add(_bytes, 0x20), _start))
+        }
+
+        return tempUint;
+    }
 
     // Fallback function
     receive() external payable {

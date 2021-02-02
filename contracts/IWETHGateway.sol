@@ -17,4 +17,6 @@ interface IWETHGateway {
     uint256 interesRateMode,
     uint16 referralCode
   ) external;
+
+  function getAWETHAddress() external returns (address);
 }
