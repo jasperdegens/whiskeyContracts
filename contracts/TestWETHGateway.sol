@@ -14,7 +14,7 @@ contract TestWETHGateway is IWETHGateway, ERC20 {
       // mint equivalent amount to msg sender
       // simulate 10% interest
       uint256 interestSimulation = (msg.value * 11) / 10;
-      _mint(msg.sender, interestSimulation);
+      _mint(msg.sender, msg.value);
   }
 
   function withdrawETH(uint256 amount, address onBehalfOf) override external {

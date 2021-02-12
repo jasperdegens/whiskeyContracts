@@ -3,7 +3,7 @@ const { expect } = require('chai');
 const { waffle } = require("hardhat");
 const provider = waffle.provider;
 
-const usdPerEth = 124477730884;
+const usdPerEth = 60498126574;
 
 function dateToUnix(date) {
     return Math.floor(date.getTime() / 1000);
@@ -23,10 +23,13 @@ describe("Fee and Aave lending tests", () => {
         const WethGateway = await ethers.getContractFactory("TestWETHGateway");
         barrelHouse = await BarrelHouse.deploy();
         await barrelHouse.deployed();
+
+        console.log(barrelHouse.address);
+
         // deploy and give ample eth to simulate interest
         wethGateway = await WethGateway.deploy({value: ethers.constants.WeiPerEther.mul(5)});
         await wethGateway.deployed();
-        whiskeyPlatform = await WhiskeyPlatform.deploy(barrelHouse.address, wethGateway.address);
+        whiskeyPlatform = await WhiskeyPlatform.deploy(barrelHouse.address, barrelHouse.address);
 
         // give platform PLATFORM_ROLE 
         await barrelHouse.connect(accounts[0]).authorizePlatform(whiskeyPlatform.address, true);
@@ -62,7 +65,7 @@ describe("Fee and Aave lending tests", () => {
 
     it("Should check balance of wethGateway", async() => {
 
-        const startGatewayBalance = await provider.getBalance(wethGateway.address);
+      //  const startGatewayBalance = await provider.getBalance(wethGateway.address);
         await createListing(500);
         expect(await barrelHouse.balanceOf(accounts[0].address, 0)).to.equal(250);
 
@@ -97,6 +100,23 @@ describe("Fee and Aave lending tests", () => {
         expect(Math.abs((await whiskeyPlatform.totalFeesDepositedInWei()).sub(feePriceInWei).toNumber())).to.be.lessThan(10**4);
 
     });
+
+    it("Should not allow to redeem unowned bottles", async() => {
+        await createListing(1000);
+
+        await expect(whiskeyPlatform.connect(accounts[1]).redeem(0, 10)).to.be.reverted;
+        await expect(whiskeyPlatform.redeem(0, 10)).to.be.revertedWith("Treasury cannot redeem bottles.");
+
+        // purchase bottles from account 1
+        await whiskeyPlatform.connect(accounts[1]).purchaseBottles(0, 10, {value: ethers.constants.WeiPerEther});
+
+        await expect(whiskeyPlatform.connect(accounts[1]).redeem(0, 11)).to.be.reverted;
+
+        await barrelHouse.connect(accounts[1]).setApprovalForAll(whiskeyPlatform.address, true);
+        await expect(whiskeyPlatform.connect(accounts[1]).redeem(0, 10)).to.not.be.reverted;
+
+
+    })
 
     it("Should complete multiple purchases and fees should remain accurate", async() => {
 

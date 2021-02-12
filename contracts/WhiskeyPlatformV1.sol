@@ -52,6 +52,9 @@ contract WhiskeyPlatformV1 is ERC1155Holder, Ownable, ReentrancyGuard {
     // Tracks total fee deposits in wei and USD to calculate interest earned for each bottle
     uint256 public totalFeesDepositedInWei = 0;
     uint256 public totalFeesDepositedInUsd = 0;
+
+    //Track amount spent by each customer
+    mapping(address => uint256) amountSpentOnPlatformInUsd; 
     
     
     // Pricefeed aggregator from ChainLink
@@ -66,14 +69,22 @@ contract WhiskeyPlatformV1 is ERC1155Holder, Ownable, ReentrancyGuard {
     constructor (address barrelHouseAddress, address wethGateway) public {
         
         barrelHouse = BarrelHouse(barrelHouseAddress); 
-        aaveWethGateway = IWETHGateway(wethGateway);
-
-        // authorize msgSender to be able to create barrel listing
         approveDistillery(_msgSender());
+
+        // AAVE WETHGateway KOVAN address
+        aaveWethGateway = IWETHGateway(0xf8aC10E65F2073460aAD5f28E1EABE807DC287CF);
+        
+        // AAVE WETHGateway MAINNET address
+        //aaveWethGateway = IWETHGateway(address(0xDcD33426BA191383f1c9B431A342498fdac73488));
+        
+        
+        // authorize msgSender to be able to create barrel listing
 
         // Chainlink ETH/USD Kovan Address = 0x9326BFA02ADD2366b30bacB125260Af641031331
         priceFeed = AggregatorV3Interface(0x9326BFA02ADD2366b30bacB125260Af641031331);
 
+        // Chainlink MAINNET ETH/USD price feed address
+        //priceFeed = AggregatorV3Interface(address(0x5f4eC3Df9cbd43714FE2740f5E3616155c5b8419));
     }
 
 
@@ -122,6 +133,10 @@ contract WhiskeyPlatformV1 is ERC1155Holder, Ownable, ReentrancyGuard {
         BarrelData storage barrel = barrels[tokenId];
 
         return (barrel.startTimestamp, barrel.endTimestamp);
+    }
+
+    function getInvetmentTotal(address buyer) public view returns (uint256) {
+        return amountSpentOnPlatformInUsd[buyer];
     }
 
     /**** Distillery Functions *****/
@@ -179,6 +194,8 @@ contract WhiskeyPlatformV1 is ERC1155Holder, Ownable, ReentrancyGuard {
 
     /**** User Functions *****/
     function purchaseBottles(uint256 tokenId, uint16 quantity) public payable nonReentrant {
+        require(_msgSender() != tokenTreasuries[tokenId], "Treasury cannot purchase bottles");
+        
         // Ensure enough bottles to purchase
         uint256 remainingBottles = availableBottles(tokenId);
         require(remainingBottles >= quantity, "Not enough bottles available");
@@ -189,17 +206,17 @@ contract WhiskeyPlatformV1 is ERC1155Holder, Ownable, ReentrancyGuard {
 
         // Ensure eth sent covers USD cost of bottles.
         uint256 usdToWei = usdToWeiExchangeRate();
+        console.log('Eth to usd rate is: %s', uint256(usdToWei));
 
         console.log("Total Price USD: %s", paymentRequiredUSD);
-        console.log("Total Price in ETH: %s", paymentRequiredUSD.mul(usdToWei));
-
-        uint256 weiRequired = paymentRequiredUSD.mul(usdToWei);
+        uint256 weiRequired = paymentRequiredUSD.mul(10**6).div(usdToWei);
+        console.log("Wei cost is %s", weiRequired);
 
         console.log("Payment supplied: %s", msg.value);
-        console.log("Wei cost is %s", weiRequired);
 
         require(msg.value >= weiRequired, "Payment does not cover the price of bottles.");
 
+        amountSpentOnPlatformInUsd[_msgSender()] += paymentRequiredUSD;
 
         // calculate fees total in wei
         uint256 feesInUsd = uint256(feePriceUsd).mul(quantity);
@@ -218,7 +235,7 @@ contract WhiskeyPlatformV1 is ERC1155Holder, Ownable, ReentrancyGuard {
 
         // Safe transfer payment to treasury account
         (bool success, ) = tokenTreasuries[tokenId].call{value: msg.value.sub(feesInWei)}("");
-        require(success, "Transfer did not succceed");
+        require(success, "Transfer did not succceed.");
     }
 
     /**
@@ -231,6 +248,8 @@ contract WhiskeyPlatformV1 is ERC1155Holder, Ownable, ReentrancyGuard {
      *   - User must approve platform to transfer their whiskey tokens.
      */
     function redeem(uint256 tokenId, uint16 quantity) public {
+        address treasury = tokenTreasuries[tokenId];
+        require(_msgSender() != treasury, "Treasury cannot redeem bottles.");
         barrelHouse.burn(_msgSender(), tokenId, quantity);
 
         BarrelData storage barrel = barrels[tokenId];
@@ -256,16 +275,16 @@ contract WhiskeyPlatformV1 is ERC1155Holder, Ownable, ReentrancyGuard {
     // Ensure transfered amount covers cost of 
     function usdToWeiExchangeRate() internal view returns (uint256) {
       // Local method
-        int ethToUsdRate = 124477730884; // ROUND 36893488147419107460 data from KOVAN
-        uint8 rateDecimals = 8;
+        //int usdToEthRate = 124477730884; // ROUND 36893488147419107460 data from KOVAN
+        //uint8 rateDecimals = 8;
        
         // Use ChainLink Oracle for price feed for production
-        //(uint80 _, int256 ethToUsdRate, uint256 _, uint256 _, uint80 _) = priceFeed.latestRoundData();
-        //uint8 rateDecimals = priceFeed.decimals();
+        (, int256 usdToEthRate, , , ) = priceFeed.latestRoundData();
+        uint8 rateDecimals = priceFeed.decimals();
 
-        require(ethToUsdRate > 0, "Cannot buy when rate is 0 or less.");
-
-        uint256 usdToWei = uint256(10 ** (rateDecimals - INTERNAL_PRICE_DECIMALS)).mul(1 ether).div(uint256(ethToUsdRate));
+        require(usdToEthRate > 0, "Cannot buy when rate is 0 or less.");
+        console.log(uint(usdToEthRate));
+        uint256 usdToWei = uint256(10 ** (rateDecimals - INTERNAL_PRICE_DECIMALS)).mul(1 ether).div(uint256(usdToEthRate));
 
         return usdToWei;
     }
@@ -292,18 +311,19 @@ contract WhiskeyPlatformV1 is ERC1155Holder, Ownable, ReentrancyGuard {
         uint256 feesPaidInUsd
     )
     internal nonReentrant {
-
-        (bool success, bytes memory result) = (aaveWethGateway.getAWETHAddress())
+        address aWETH = aaveWethGateway.getAWETHAddress();
+        (bool success, bytes memory result) = (aWETH)
             .call(abi.encodeWithSignature("balanceOf(address)", address(this)));      
         require(success, "Error calling aWeth contract");
 
+
         uint256 feesWithInterest = toUint256(result, 0);
+        console.log("Aave balance is: %s", feesWithInterest);
         
         // calculate wei representation of share of fee pool
         uint256 feeRatioInWei = feesPaidInUsd.mul(totalFeesDepositedInWei).div(totalFeesDepositedInUsd);
         // calculate interest earned ratio
         uint256 interestEarnedRatio = feesPaidInUsd.mul(feesWithInterest).div(totalFeesDepositedInUsd);
-        aaveWethGateway.withdrawETH(interestEarnedRatio, address(this));        
 
 
         uint256 eligableInterest = interestEarnedRatio - feeRatioInWei;
@@ -312,6 +332,9 @@ contract WhiskeyPlatformV1 is ERC1155Holder, Ownable, ReentrancyGuard {
         console.log("Interest earned: %s", interestEarnedRatio);
         console.log("Eligable interest: %s", eligableInterest);
 
+        // Approve the WETHGateway
+        aWETH.call(abi.encodeWithSignature("approve(address,uint256)", aaveWethGateway, interestEarnedRatio));
+        aaveWethGateway.withdrawETH(interestEarnedRatio, address(this));        
 
         (bool distilleryFeePaidSuccess,) = distillery.call{value: feeRatioInWei}("");
         (bool redeemerInterestPaid,) = redeemer.call{value: eligableInterest}("");

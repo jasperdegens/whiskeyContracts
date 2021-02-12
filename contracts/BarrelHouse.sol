@@ -37,6 +37,12 @@ contract BarrelHouse is ERC1155, AccessControl {
         _setupRole(DEFAULT_ADMIN_ROLE, _msgSender());
     }
 
+    // Returns the total number of created barrels. Barrel tokens are 0 indexed 
+    // so this returns the last index + 1. (like javascript .length)
+    function getTotalBarrels() public view returns (uint256) {
+        return tokenIdTracker.current();
+    }
+
 
     // Add or remove platform role
     function authorizePlatform(address platformAddress, bool isAuthorized) public {
