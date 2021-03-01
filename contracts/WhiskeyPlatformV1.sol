@@ -120,9 +120,9 @@ contract WhiskeyPlatformV1 is ERC1155Holder, Ownable, ReentrancyGuard {
         uint32 priceRange = endPrice - startPrice;
         uint32 additionalPrice = uint32(uint256(priceRange).mul(elapsedDuration).div(totalAgingDuration));
 
-        uint32 currPrice = barrel.startPriceUsd + additionalPrice;
+        uint32 currBottlePrice = barrel.startPriceUsd + additionalPrice;
 
-        return (currPrice, barrel.startPriceUsd, barrel.endPriceUsd, barrel.feesPerBottleUsd);
+        return (currBottlePrice, barrel.startPriceUsd, barrel.endPriceUsd, barrel.feesPerBottleUsd);
     }
 
     function currentBottlePrice(uint256 tokenId) public view returns(uint32, uint32, uint32, uint32) {
@@ -209,7 +209,7 @@ contract WhiskeyPlatformV1 is ERC1155Holder, Ownable, ReentrancyGuard {
         console.log('Eth to usd rate is: %s', uint256(usdToWei));
 
         console.log("Total Price USD: %s", paymentRequiredUSD);
-        uint256 weiRequired = paymentRequiredUSD.mul(10**6).div(usdToWei);
+        uint256 weiRequired = paymentRequiredUSD.mul(usdToWei);
         console.log("Wei cost is %s", weiRequired);
 
         console.log("Payment supplied: %s", msg.value);
@@ -221,7 +221,7 @@ contract WhiskeyPlatformV1 is ERC1155Holder, Ownable, ReentrancyGuard {
         // calculate fees total in wei
         uint256 feesInUsd = uint256(feePriceUsd).mul(quantity);
         uint256 feesInWei = feesInUsd.mul(usdToWei);
-        DepositFees(feesInWei, feesInUsd);
+        //DepositFees(feesInWei, feesInUsd);
 
 
         // Transfer tokens to buyer from treasury
@@ -274,15 +274,12 @@ contract WhiskeyPlatformV1 is ERC1155Holder, Ownable, ReentrancyGuard {
 
     // Ensure transfered amount covers cost of 
     function usdToWeiExchangeRate() internal view returns (uint256) {
-      // Local method
-        //int usdToEthRate = 124477730884; // ROUND 36893488147419107460 data from KOVAN
-        //uint8 rateDecimals = 8;
        
         // Use ChainLink Oracle for price feed for production
         (, int256 usdToEthRate, , , ) = priceFeed.latestRoundData();
         uint8 rateDecimals = priceFeed.decimals();
 
-        require(usdToEthRate > 0, "Cannot buy when rate is 0 or less.");
+        // require(usdToEthRate > 0, "Cannot buy when rate is 0 or less.");
         console.log(uint(usdToEthRate));
         uint256 usdToWei = uint256(10 ** (rateDecimals - INTERNAL_PRICE_DECIMALS)).mul(1 ether).div(uint256(usdToEthRate));
 
